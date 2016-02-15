@@ -9,6 +9,8 @@ atlassian-ide-plugin.xml
 intellij.testclasses
 intellij.classes
 htsjdk
+*/.DS_Store
+.DS_Store
 .idea
 target
 report
