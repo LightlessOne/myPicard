@@ -27,6 +27,7 @@ package picard.analysis;
 import htsjdk.samtools.SAMFileHeader;
 import htsjdk.samtools.SAMFileHeader.SortOrder;
 import htsjdk.samtools.SAMRecord;
+import htsjdk.samtools.SAMRecordIterator;
 import htsjdk.samtools.SamReader;
 import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.reference.ReferenceSequence;
@@ -51,6 +52,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -134,104 +136,87 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
 
         final ProgressLogger progress = new ProgressLogger(log);
 
-        final ExecutorService service = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors()/2);
+        final ExecutorService service = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() / 2);
         final AtomicBoolean isStop = new AtomicBoolean(false);
         final int LIST_CAPACITY = 10000;
         final int QUEUE_CAPACITY = 10;
-        final int SEM_CAPACITY = 10;
+        final int SEM_CAPACITY = 1;
         ArrayList<Object[]> pairs = new ArrayList<>(LIST_CAPACITY);
-        final BlockingQueue<ArrayList<Object[]>> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
         final Semaphore sem = new Semaphore(SEM_CAPACITY);
         final boolean fAnyUseNoRefReads = anyUseNoRefReads;
 
-        service.execute(new Runnable() {
-            @Override
-            public void run() {
-                while (true) {
-                    try {
-                        final ArrayList<Object[]> tmpPairs = queue.take();
-                        if (tmpPairs.size() == 0) {
-                            return;
-                        }
-                        sem.acquire();
+        try {
+            for (final SAMRecordIterator it = in.iterator(); it.hasNext(); ) {
+                final SAMRecord rec = it.next();
+                final ReferenceSequence ref;
+                if (walker == null || rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
+                    ref = null;
+                } else {
+                    ref = walker.get(rec.getReferenceIndex());
+                }
 
-                        service.execute(new Runnable() {
-                            @Override
-                            public void run() {
-                                for (Object[] objects : tmpPairs) {
-                                    SAMRecord rec = (SAMRecord) objects[0];
-                                    ReferenceSequence ref = (ReferenceSequence) objects[1];
-                                    for (final SinglePassSamProgram program : programs) {
-                                        program.acceptRead(rec,ref);
-                                    }
-                                    progress.record(rec);
-                                    if (stopAfter > 0 && progress.getCount() >= stopAfter) {
-                                        isStop.set(true);
-                                        return;
-                                    }
-                                    if (!fAnyUseNoRefReads && rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
-                                        isStop.set(true);
-                                        return;
-                                    }
+                if (isStop.get()) {
+                    service.shutdownNow();
+                    break;
+                }
+                pairs.add(new Object[]{rec, ref});
+
+                if (pairs.size() < QUEUE_CAPACITY && it.hasNext()) {
+                    continue;
+                }
+
+                final ArrayList<Object[]> pairsChunk = pairs;
+                sem.acquire();
+                service.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            for (final Object[] arr : pairsChunk) {
+
+                                final SAMRecord rec = (SAMRecord) arr[0];
+                                final ReferenceSequence ref = (ReferenceSequence) arr[1];
+
+                                for (final SinglePassSamProgram program : programs) {
+                                    program.acceptRead(rec, ref);
                                 }
-                                sem.release();
+
+                                progress.record(rec);
+                                // See if we need to terminate early?
+                                if (stopAfter > 0 && progress.getCount() >= stopAfter) {
+                                    isStop.set(true);
+                                    return;
+                                }
+
+                                // And see if we're into the unmapped reads at the end
+                                if (!fAnyUseNoRefReads && rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
+                                    isStop.set(true);
+                                    return;
+                                }
                             }
-                        });
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
+                        } finally {
+                            sem.release();
+                        }
                     }
-                }
+                });
+                pairs = new ArrayList<Object[]>(QUEUE_CAPACITY);
             }
-        });
-
-        for (final SAMRecord rec : in) {
-
-            final ReferenceSequence ref;
-            if (walker == null || rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
-                ref = null;
-            } else {
-                ref = walker.get(rec.getReferenceIndex());
-            }
-
-            if (isStop.get()) {
-                service.shutdownNow();
-                break;
-            }
-
-            pairs.add(new Object[]{rec,ref});
-            if (pairs.size() < LIST_CAPACITY) {
-                continue;
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            if (!service.isShutdown()) {
+                service.shutdown();
             }
             try {
-                queue.put(pairs);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-            pairs = new ArrayList<>(LIST_CAPACITY);
-        }
-
-        if (!isStop.get()) {
-            if (pairs.size() != 0) {
-                try {
-                    queue.put(pairs);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-
-            pairs = new ArrayList<>();
-            try {
-                queue.put(pairs);
+                service.awaitTermination(1, TimeUnit.DAYS);
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
 
-            service.shutdown();
-        }
-        progress.getCount();
-        CloserUtil.close(in);
-        for (final SinglePassSamProgram program : programs) {
-            program.finish();
+            System.out.println(progress.getCount());
+            CloserUtil.close(in);
+            for (final SinglePassSamProgram program : programs) {
+                program.finish();
+            }
         }
     }
 
