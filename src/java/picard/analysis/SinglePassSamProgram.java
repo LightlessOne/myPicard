@@ -178,7 +178,7 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                             }
                         });
                     } catch (InterruptedException e) {
-                        //dosmth
+                        e.printStackTrace();
                     }
                 }
             }
@@ -199,52 +199,23 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
             }
 
             pairs.add(new Object[]{rec,ref});
-            if (pairs.size() < QUEUE_CAPACITY) {
+            if (pairs.size() < LIST_CAPACITY) {
                 continue;
             }
             try {
                 queue.put(pairs);
             } catch (InterruptedException e) {
-                //domsmth
+                e.printStackTrace();
             }
-            pairs = new ArrayList<>(QUEUE_CAPACITY);
+            pairs = new ArrayList<>(LIST_CAPACITY);
         }
-
-
-
-
-//        for (final SAMRecord rec : in) {
-//
-//            final ReferenceSequence ref;
-//            if (walker == null || rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
-//                ref = null;
-//            } else {
-//                ref = walker.get(rec.getReferenceIndex());
-//            }
-//
-//            for (final SinglePassSamProgram program : programs) {
-//                program.acceptRead(rec, ref);
-//            }
-//
-//            progress.record(rec);
-//
-//            // See if we need to terminate early?
-//            if (stopAfter > 0 && progress.getCount() >= stopAfter) {
-//                break;
-//            }
-//
-//            // And see if we're into the unmapped reads at the end
-//            if (!anyUseNoRefReads && rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
-//                break;
-//            }
-//        }
 
         if (!isStop.get()) {
             if (pairs.size() != 0) {
                 try {
                     queue.put(pairs);
                 } catch (InterruptedException e) {
-                    //dosmth
+                    e.printStackTrace();
                 }
             }
 
@@ -252,12 +223,12 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
             try {
                 queue.put(pairs);
             } catch (InterruptedException e) {
-                //dosmth
+                e.printStackTrace();
             }
 
             service.shutdown();
         }
-
+        progress.getCount();
         CloserUtil.close(in);
         for (final SinglePassSamProgram program : programs) {
             program.finish();
