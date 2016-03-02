@@ -1,26 +1,26 @@
 /*
- * The MIT License
- *
- * Copyright (c) 2015 The Broad Institute
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
+     * The MIT License
+     *
+     * Copyright (c) 2015 The Broad Institute
+     *
+     * Permission is hereby granted, free of charge, to any person obtaining a copy
+     * of this software and associated documentation files (the "Software"), to deal
+     * in the Software without restriction, including without limitation the rights
+     * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+     * copies of the Software, and to permit persons to whom the Software is
+     * furnished to do so, subject to the following conditions:
+     *
+     * The above copyright notice and this permission notice shall be included in
+     * all copies or substantial portions of the Software.
+     *
+     * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+     * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+     * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+     * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+     * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+     * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+     * THE SOFTWARE.
+     */
 
 package picard.analysis;
 
@@ -42,18 +42,17 @@ import picard.cmdline.CommandLineProgram;
 import picard.cmdline.Option;
 import picard.cmdline.StandardOptionDefinitions;
 
+import javax.swing.*;
+import java.awt.*;
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Super class that is designed to provide some consistent structure between subclasses that
@@ -133,17 +132,16 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
             anyUseNoRefReads = anyUseNoRefReads || program.usesNoRefReads();
         }
 
-
         final ProgressLogger progress = new ProgressLogger(log);
 
         final ExecutorService service = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() / 2);
         final AtomicBoolean isStop = new AtomicBoolean(false);
-        final int LIST_CAPACITY = 10000;
-        final int QUEUE_CAPACITY = 10;
-        final int SEM_CAPACITY = 1;
-        ArrayList<Object[]> pairs = new ArrayList<>(LIST_CAPACITY);
+        final int LIST_CAPACITY = 1000;
+        final int SEM_CAPACITY = 10;
         final Semaphore sem = new Semaphore(SEM_CAPACITY);
-        final boolean fAnyUseNoRefReads = anyUseNoRefReads;
+        final boolean finalAnyUseNoRefReads = anyUseNoRefReads;
+        ArrayList<Object[]> pairs = new ArrayList<Object[]>(LIST_CAPACITY);
+
 
         try {
             for (final SAMRecordIterator it = in.iterator(); it.hasNext(); ) {
@@ -154,24 +152,23 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                 } else {
                     ref = walker.get(rec.getReferenceIndex());
                 }
-
                 if (isStop.get()) {
                     service.shutdownNow();
                     break;
                 }
                 pairs.add(new Object[]{rec, ref});
 
-                if (pairs.size() < QUEUE_CAPACITY && it.hasNext()) {
+                if (pairs.size() < LIST_CAPACITY && it.hasNext()) {
                     continue;
                 }
-
-                final ArrayList<Object[]> pairsChunk = pairs;
                 sem.acquire();
+                final ArrayList<Object[]> pairsTmp = pairs;
+
                 service.execute(new Runnable() {
                     @Override
                     public void run() {
                         try {
-                            for (final Object[] arr : pairsChunk) {
+                            for (final Object[] arr : pairsTmp) {
 
                                 final SAMRecord rec = (SAMRecord) arr[0];
                                 final ReferenceSequence ref = (ReferenceSequence) arr[1];
@@ -181,6 +178,7 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                                 }
 
                                 progress.record(rec);
+
                                 // See if we need to terminate early?
                                 if (stopAfter > 0 && progress.getCount() >= stopAfter) {
                                     isStop.set(true);
@@ -188,7 +186,7 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                                 }
 
                                 // And see if we're into the unmapped reads at the end
-                                if (!fAnyUseNoRefReads && rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
+                                if (!finalAnyUseNoRefReads && rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
                                     isStop.set(true);
                                     return;
                                 }
@@ -198,12 +196,12 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                         }
                     }
                 });
-                pairs = new ArrayList<Object[]>(QUEUE_CAPACITY);
+                pairs = new ArrayList<Object[]>(LIST_CAPACITY);
             }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            if (!service.isShutdown()) {
+            if (!service.isShutdown()){
                 service.shutdown();
             }
             try {
@@ -218,6 +216,7 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                 program.finish();
             }
         }
+
     }
 
     /** Can be overriden and set to false if the section of unmapped reads at the end of the file isn't needed. */
